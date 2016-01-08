@@ -13,11 +13,25 @@ CRITICAL = (50, "red", "white")
 def get_datetime():
     return datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
 
+def _get_caller():
+    try:
+        return sys._getframe(3).f_code.co_name
+
+    except ValueError:
+        return sys._getframe(2).f_code.co_name
+
+def _get_caller_file():
+    try:
+        return sys._getframe(3).f_code.co_filename
+
+    except ValueError:
+        return sys._getframe(2).f_code.co_filename
+
 class Logger(object):
     """
     Handles logging. Can log to multiple files simultaneously.
     """
-    def __init__(self, filepaths=[], file_level=INFO, stdout_level=INFO, verbose=True, colour=False):
+    def __init__(self, filepaths=(), file_level=INFO, stdout_level=INFO, verbose=True, colour=True):
         """
         Params:
 
@@ -27,10 +41,24 @@ class Logger(object):
         verbose: determines if logging is outputted to stdout in addition to the logfile.
         colour: enable the use of codes for coloured text in a terminal. Can't be changed once Logger object has been instantiated.
         """
-        self.logfiles = []
+        assert not isinstance(filepaths, str)
+
+        self.logfiles = filepaths
         for file in filepaths:
+            logfile = open(file, "r")
+            data = logfile.read().strip()
+            logfile.close()
+
             #Open the file for reading and appending. It is created if it doesn't already exist.
-            self.logfiles.append(open(file, mode="a+"))
+            logfile = open(file, "a+")
+
+            if data == "":
+                logfile.write("{} New {} session, logging started.\n".format(get_datetime(), _get_caller_file()))
+
+            else:
+                logfile.write("\n\n{} New {} session, logging started.\n".format(get_datetime(), _get_caller_file()))
+
+            logfile.close()
 
         self.file_level = file_level
         self.stdout_level = stdout_level
@@ -41,44 +69,48 @@ class Logger(object):
             self._writer.on_colour = None
 
     def log(self, data, level):
-        if level < self.file_level and level < self.stdout_level:
+        if level[0] < self.file_level[0] and level[0] < self.stdout_level[0]:
             return
 
         now = get_datetime()
-        to_log = now + " " + sys._getframe(1)
+
+        if level != INFO:
+            to_log = now + " Caller: " + str(_get_caller()) + ", " + str(_get_caller_file())
+
+        else:
+            to_log = now
 
         #Create a newline after the date/time unless the level is info
         if level != INFO:
             to_log += "\n"
 
-        else:
-            to_log += ": "
-
         to_log += data
 
-        if self.verbose and not level < self.stdout_level[0]:
+        if self.verbose and not level[0] < self.stdout_level[0]:
             try:
                 self._writer.write(to_log, self.stdout_level[1], self.stdout_level[2])
 
             except AttributeError:
                 print(to_log)
 
-        if not level < self.file_level[0]:
-            #TODO: Possibly make this run on a seperate thread for speed reasons - likely to help most when logging over network
-            for logfile in self.logfiles:
+        if not level[0] < self.file_level[0]:
+            #TODO: Possibly make this run on a separate thread for speed reasons - likely to help most when logging over network
+            for logpath in self.logfiles:
+                logfile = open(logpath, "a+")
                 logfile.write(to_log)
+                logfile.close()
 
     def debug(self, data):
-        self.log(data, DEBUG)
+        self.log("DEBUG: " + data, DEBUG)
 
     def info(self, data):
-        self.log(data, INFO)
+        self.log("INFO: " + data, INFO)
 
     def warning(self, data):
-        self.log(data, WARNING)
+        self.log("WARNING: " + data, WARNING)
 
     def error(self, data):
-        self.log(data, ERROR)
+        self.log("ERROR: " + data, ERROR)
 
     def critical(self, data):
-        self.log(data, CRITICAL)
+        self.log("CRITICAL: " + data, CRITICAL)
