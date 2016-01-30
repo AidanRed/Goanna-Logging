@@ -1,6 +1,14 @@
 import datetime
 import sys
-import colours
+
+
+COLOUR_ENABLED = False
+try:
+    import colours
+    COLOUR_ENABLED = True
+
+except ImportError:
+    pass
 
 #Debug levels in descending levels of detail.
 #(priority, txt-colour, bg-colour)
@@ -27,11 +35,12 @@ def _get_caller_file():
     except ValueError:
         return sys._getframe(2).f_code.co_filename
 
+
 class Logger(object):
     """
     Handles logging. Can log to multiple files simultaneously.
     """
-    def __init__(self, filepaths=(), file_level=INFO, stdout_level=INFO, verbose=True, colour=True):
+    def __init__(self, filepaths=(), file_level=INFO, stdout_level=INFO, verbose=True, colour=COLOUR_ENABLED):
         """
         Params:
 
@@ -63,10 +72,14 @@ class Logger(object):
         self.file_level = file_level
         self.stdout_level = stdout_level
         self.verbose = verbose
-
-        if colour:
-            self._writer = colours.ColoredWriter()
-            self._writer.on_colour = None
+        
+        try:
+            if colour:
+                self._writer = colours.ColoredWriter()
+                self._writer.on_colour = None
+        
+        except NameError:
+            pass
 
     def log(self, data, level):
         if level[0] < self.file_level[0] and level[0] < self.stdout_level[0]:
