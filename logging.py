@@ -22,7 +22,11 @@ CRITICAL = (50, "red", "white")
 
 
 def get_datetime():
-    return datetime.datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+    return datetime.datetime.now().strftime("%H:%M:%S %d-%m-%Y")
+
+
+def get_date():
+    return datetime.datetime.now().strftime("%d-%m-%Y")
 
 
 def get_time():
@@ -84,7 +88,11 @@ class Logger(object):
             logfile.close()
 
         else:
-            filename = get_datetime() + ".log"
+            filename = get_date() + "@" + get_time() + ".log"
+            filename = filename.replace("/", "-")
+            if os.name == "nt":
+                filename = filename.replace(":", "-")
+
             logfile = open(filename, "a+")
 
             logfile.write("{} New {} session, logging started.\n".format(get_datetime(), _get_caller_file()))
@@ -121,6 +129,9 @@ class Logger(object):
         # Create a newline after the date/time unless the level is info
         if level != INFO:
             to_log += "\n"
+
+        else:
+            to_log += " "
 
         to_log += data
 
