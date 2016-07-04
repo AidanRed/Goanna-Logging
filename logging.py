@@ -2,6 +2,7 @@ import datetime
 import sys
 import os
 import threading
+import errno
 
 
 COLOUR_ENABLED = False
@@ -51,6 +52,14 @@ def _get_caller_file():
     return os.path.basename(path)
 
 
+def create_path(path):
+    try:
+        os.makedirs(path)
+    except OSError as exception:
+        if exception.errno != errno.EEXIST:
+            raise
+
+
 class Logger(object):
     """
     Handles logging.
@@ -59,16 +68,18 @@ class Logger(object):
         """
         Params:
 
-        log_dir_or_path: the directory to put the logfiles if one_file_mode is False, otherwise the path to the logfile.]
+        log_dir_or_path: the directory to put the logfiles if one_file_mode is False, otherwise the path to the logfile.
         one_file_mode: if True, appends to existing logfile. If False, creates a new logfile in specified directory.
         file_level: the maximum level of detail outputted to the logfile.
         stdout_level: the maximum level of detail outputted to stdout (has no effect if verbose=False).
         verbose: determines if logging is outputted to stdout in addition to the logfile.
         colour: enable the use of codes for coloured text in a terminal. Can't be changed once Logger object has been instantiated.
-        threaded: whether the file writing is handled by a seperate thread.
+        threaded: whether the file writing is handled by a separate thread.
         """
         if one_file_mode:
             self.logfile_path = log_dir_or_path
+            the_dir = self.logfile_path.rstrip(os.path.basename(self.logfile_path))
+            create_path(the_dir)
 
             try:
                 logfile = open(log_dir_or_path, "r")
@@ -90,6 +101,8 @@ class Logger(object):
             logfile.close()
 
         else:
+            create_path(log_dir_or_path)
+
             filename = get_date() + "@" + get_time() + ".log"
             filename = filename.replace("/", "-")
             if os.name == "nt":
@@ -101,7 +114,6 @@ class Logger(object):
             logfile.close()
 
             self.logfile_path = os.path.join(log_dir_or_path, filename)
-
 
         self.file_level = file_level
         self.stdout_level = stdout_level
