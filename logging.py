@@ -43,10 +43,12 @@ def _get_caller():
 
 def _get_caller_file():
     try:
-        return sys._getframe(3).f_code.co_filename
+        path = sys._getframe(3).f_code.co_filename
 
     except ValueError:
-        return sys._getframe(2).f_code.co_filename
+        path = sys._getframe(2).f_code.co_filename
+
+    return os.path.basename(path)
 
 
 class Logger(object):
@@ -80,10 +82,10 @@ class Logger(object):
             logfile = open(log_dir_or_path, "a+")
 
             if data == "":
-                logfile.write("{} New {} session, logging started.\n".format(get_datetime(), _get_caller_file()))
+                logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
 
             else:
-                logfile.write("\n\n{} New {} session, logging started.\n".format(get_datetime(), _get_caller_file()))
+                logfile.write("\n\n{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
 
             logfile.close()
 
@@ -93,9 +95,9 @@ class Logger(object):
             if os.name == "nt":
                 filename = filename.replace(":", "-")
 
-            logfile = open(filename, "a+")
+            logfile = open(os.path.join(log_dir_or_path, filename), "a+")
 
-            logfile.write("{} New {} session, logging started.\n".format(get_datetime(), _get_caller_file()))
+            logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
             logfile.close()
 
             self.logfile_path = os.path.join(log_dir_or_path, filename)
@@ -133,7 +135,7 @@ class Logger(object):
         else:
             to_log += " "
 
-        to_log += data
+        to_log += data + "\n"
 
         if self.verbose and not level[0] < self.stdout_level[0]:
             try:
