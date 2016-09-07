@@ -15,11 +15,11 @@ except ImportError:
 
 # Debug levels in descending levels of detail.
 # (priority, txt-colour, bg-colour)
-DEBUG = (10, "blue", None)
-INFO = (20, "green", None)
-WARNING = (30, "yellow", None)
-ERROR = (40, "red", None)
-CRITICAL = (50, "red", "white")
+DEBUG = (10, "blue", None, "DEBUG")
+INFO = (20, "green", None, "INFO")
+WARNING = (30, "yellow", None, "WARNING")
+ERROR = (40, "red", None, "ERROR")
+CRITICAL = (50, "red", "white", "CRITICAL")
 
 
 def get_datetime():
@@ -64,7 +64,7 @@ class Logger(object):
     """
     Handles logging.
     """
-    def __init__(self, log_dir_or_path, one_file_mode=False, file_level=INFO, stdout_level=INFO, verbose=True, colour=COLOUR_ENABLED, threaded=True):
+    def __init__(self, log_dir_or_path, one_file_mode=False, file_level=DEBUG, stdout_level=INFO, verbose=True, colour=COLOUR_ENABLED, threaded=True):
         """
         Params:
 
@@ -90,15 +90,16 @@ class Logger(object):
                 data = ""
 
             # Open the file for reading and appending. It is created if it doesn't already exist.
-            logfile = open(log_dir_or_path, "a+")
+            self.logfile = open(log_dir_or_path, "a+")
 
             if data == "":
-                logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
+                self.logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
 
             else:
-                logfile.write("\n\n{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
+                self.logfile.write("\n\n{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
 
-            logfile.close()
+            self.logfile.flush()
+            os.fsync(self.logfile.fileno())
 
         else:
             create_path(log_dir_or_path)
@@ -108,12 +109,13 @@ class Logger(object):
             if os.name == "nt":
                 filename = filename.replace(":", "-")
 
-            logfile = open(os.path.join(log_dir_or_path, filename), "a+")
+            self.logfile = open(os.path.join(log_dir_or_path, filename), "a+")
 
-            logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
-            logfile.close()
-
+            self.logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
             self.logfile_path = os.path.join(log_dir_or_path, filename)
+
+            self.logfile.flush()
+            os.fsync(self.logfile.fileno())
 
         self.file_level = file_level
         self.stdout_level = stdout_level
@@ -158,13 +160,19 @@ class Logger(object):
 
         if not level[0] < self.file_level[0]:
             def write():
-                logfile = open(self.logfile_path, "a+")
-                logfile.write(to_log)
-                logfile.close()
+                self.logfile.write(to_log+"\n")
+                self.logfile.flush()
+                os.fsync(self.logfile.fileno())
+
+                return
 
             if self.threaded:
-                the_thread = threading.Thread(target=write)
-                the_thread.start()
+                try:
+                    the_thread = threading.Thread(target=write)
+                    the_thread.start()
+
+                except RuntimeError:
+                    write()
 
             else:
                 write()
@@ -183,3 +191,19 @@ class Logger(object):
 
     def critical(self, data):
         self.log("CRITICAL: " + data, CRITICAL)
+
+logger = None
+
+
+def start_logging_session(log_dir_or_path=os.path.join("logs", "game"), one_file_mode=False, file_level=DEBUG,
+                          stdout_level=INFO, verbose=True, colour=COLOUR_ENABLED, threaded=True):
+    global logger
+
+    if logger is None:
+        logger = Logger(log_dir_or_path, one_file_mode, file_level, stdout_level, verbose, colour, threaded)
+
+    else:
+        # logging session already started!
+        pass
+
+    return logger
