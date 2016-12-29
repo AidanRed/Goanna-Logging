@@ -1,9 +1,16 @@
+"""
+Need a way of stopping streams from blocking if queue.get() is called after last log message but before main thread ends
+
+find deepest trace on stack
+"""
+
 import datetime
 import sys
 import os
 import threading
 import errno
-
+import io
+from queue import Queue
 
 COLOUR_ENABLED = False
 try:
@@ -34,22 +41,42 @@ def get_time():
     return datetime.datetime.now().strftime("%H:%M:%S")
 
 
-def _get_caller():
-    try:
-        return sys._getframe(3).f_code.co_name
+def _get_frames():
+    frames = []
+    i = 0
+    while True:
+        try:
+            frames.append(sys._getframe(i))
 
-    except ValueError:
-        return sys._getframe(2).f_code.co_name
+        except ValueError:
+            break
+
+        i += 1
+
+    new_frames = []
+    for frame in frames:
+        if os.path.basename(frame.f_code.co_filename) != "goanna_logging.py":
+            new_frames.append(frame)
+
+    return new_frames
+
+
+def _get_caller():
+    frames = _get_frames()
+
+    return frames[0].f_code.co_name
 
 
 def _get_caller_file():
-    try:
-        path = sys._getframe(3).f_code.co_filename
+    frames = _get_frames()
 
-    except ValueError:
-        path = sys._getframe(2).f_code.co_filename
+    return os.path.basename(frames[0].f_code.co_name)
 
-    return os.path.basename(path)
+
+def _caller_and_path():
+    the_frame = _get_frames()[0].f_code
+
+    return the_frame.co_name, os.path.basename(the_frame.co_filename)
 
 
 def create_path(path):
@@ -58,6 +85,99 @@ def create_path(path):
     except OSError as exception:
         if exception.errno != errno.EEXIST:
             raise
+
+
+class OutputStream(object):
+    def __init__(self, threaded=False):
+        self._threaded = threaded
+
+        if self._threaded:
+            self.queue = Queue()
+            self._thread = threading.Thread(target=self.__emission_loop, daemon=False)
+            self._thread.start()
+
+    def __emission_loop(self):
+        while threading.main_thread().is_alive():
+            self.emit(self.queue.get())
+
+        # Ensure all data is written
+        while not self.queue.empty():
+            self.emit(self.queue.get())
+
+        self.close()
+
+    def write(self, data):
+        if self._threaded:
+            self.queue.put(data)
+
+        else:
+            self.emit(data)
+
+    def emit(self, data):
+        pass
+
+    def force_sync(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class StdoutStream(OutputStream):
+    def __init__(self, threaded=False, force_write=False):
+        self.force_write = force_write
+        super().__init__(threaded=threaded)
+
+    def emit(self, data):
+        print(data, end="", flush=self.force_write)
+
+    def force_sync(self):
+        sys.stdout.flush()
+
+    def close(self):
+        pass
+
+
+class FileStream(OutputStream):
+    def __init__(self, path, threaded=True, force_write=False):
+        self.output_file = open(path, "a+")
+        self.force_write = force_write
+
+        super().__init__(threaded=threaded)
+
+    def emit(self, data):
+        self.output_file.write(data)
+        self.output_file.flush()
+        if self.force_write:
+            os.fsync(self.output_file.fileno())
+
+    def force_sync(self):
+        os.fsync(self.output_file.fileno())
+
+    def close(self):
+        self.output_file.close()
+
+
+# Sync interval?
+class CachedStream(OutputStream):
+    def __init__(self, path, threaded=False):
+        self.cache = io.StringIO()
+        self.output_file = FileStream(path, threaded=False)
+
+        super().__init__(threaded=threaded)
+
+    def emit(self, data):
+        self.cache.write(data)
+
+    def force_sync(self):
+        self.output_file.write(self.cache.getvalue())
+        self.cache.close()
+        self.cache = io.StringIO()
+
+    def close(self):
+        self.output_file.write(self.cache.getvalue())
+        self.cache.close()
+        self.output_file.close()
 
 
 class Logger(object):
@@ -90,7 +210,7 @@ class Logger(object):
                 data = ""
 
             # Open the file for reading and appending. It is created if it doesn't already exist.
-            self.logfile = open(log_dir_or_path, "a+")
+            self.logfile = FileStream(log_dir_or_path)
 
             if data == "":
                 self.logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
@@ -98,24 +218,20 @@ class Logger(object):
             else:
                 self.logfile.write("\n\n{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
 
-            self.logfile.flush()
-            os.fsync(self.logfile.fileno())
-
         else:
             create_path(log_dir_or_path)
 
-            filename = get_date() + "@" + get_time() + ".log"
+            filename = "{}@{}.log".format(get_date(), get_time())
             filename = filename.replace("/", "-")
             if os.name == "nt":
                 filename = filename.replace(":", "-")
 
-            self.logfile = open(os.path.join(log_dir_or_path, filename), "a+")
+            self.logfile_path = os.path.join(log_dir_or_path, filename)
+            self.logfile = FileStream(self.logfile_path)
 
             self.logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
-            self.logfile_path = os.path.join(log_dir_or_path, filename)
 
-            self.logfile.flush()
-            os.fsync(self.logfile.fileno())
+        self.logfile.force_sync()
 
         self.file_level = file_level
         self.stdout_level = stdout_level
@@ -137,19 +253,11 @@ class Logger(object):
         now = get_time()
 
         if level != INFO:
-            to_log = now + " Caller: " + str(_get_caller()) + ", " + str(_get_caller_file())
+            caller, caller_path = _caller_and_path()
+            to_log = "%s Caller: %s, %s\n%s\n" % (now, str(caller), str(caller_path), data)
 
         else:
-            to_log = now
-
-        # Create a newline after the date/time unless the level is info
-        if level != INFO:
-            to_log += "\n"
-
-        else:
-            to_log += " "
-
-        to_log += data + "\n"
+            to_log = "%s %s\n" % (now, data)
 
         if self.verbose and not level[0] < self.stdout_level[0]:
             try:
@@ -159,23 +267,10 @@ class Logger(object):
                 print(to_log)
 
         if not level[0] < self.file_level[0]:
-            def write():
-                self.logfile.write(to_log+"\n")
-                self.logfile.flush()
-                os.fsync(self.logfile.fileno())
+            self.logfile.write("%s\n" % (to_log,))
 
-                return
-
-            if self.threaded:
-                try:
-                    the_thread = threading.Thread(target=write)
-                    the_thread.start()
-
-                except RuntimeError:
-                    write()
-
-            else:
-                write()
+            # The following line causes huge slowdowns
+            ##self.logfile.force_sync()
 
     def debug(self, data):
         self.log("DEBUG: " + data, DEBUG)
@@ -195,8 +290,8 @@ class Logger(object):
 logger = None
 
 
-def start_logging_session(log_dir_or_path=os.path.join("logs", "game"), one_file_mode=False, file_level=DEBUG,
-                          stdout_level=INFO, verbose=True, colour=COLOUR_ENABLED, threaded=True):
+def start_logging_session(log_dir_or_path=os.path.join("logs"), one_file_mode=False, file_level=DEBUG,
+                          stdout_level=INFO, verbose=True, colour=COLOUR_ENABLED, threaded=False):
     global logger
 
     if logger is None:
