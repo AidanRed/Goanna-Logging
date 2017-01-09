@@ -1,15 +1,14 @@
 """
 Need a way of stopping streams from blocking if queue.get() is called after last log message but before main thread ends
-
-find deepest trace on stack
+Add verbosity levels.
 """
-
 import datetime
 import sys
 import os
 import threading
 import errno
 import io
+import functools
 from queue import Queue
 
 COLOUR_ENABLED = False
@@ -54,6 +53,7 @@ def _get_frames():
         i += 1
 
     new_frames = []
+    # Possible optimisation
     for frame in frames:
         if os.path.basename(frame.f_code.co_filename) != "goanna_logging.py":
             new_frames.append(frame)
@@ -186,7 +186,7 @@ class Logger(object):
     """
     def __init__(self, log_dir_or_path, one_file_mode=False, file_level=DEBUG, stdout_level=INFO, verbose=True, colour=COLOUR_ENABLED, threaded=True):
         """
-        Params:
+        Parameters:
 
         log_dir_or_path: the directory to put the logfiles if one_file_mode is False, otherwise the path to the logfile.
         one_file_mode: if True, appends to existing logfile. If False, creates a new logfile in specified directory.
@@ -250,6 +250,8 @@ class Logger(object):
         if level[0] < self.file_level[0] and level[0] < self.stdout_level[0]:
             return
 
+        data = "%s: " % (level[-1],)
+
         now = get_time()
 
         if level != INFO:
@@ -270,22 +272,64 @@ class Logger(object):
             self.logfile.write("%s\n" % (to_log,))
 
             # The following line causes huge slowdowns
-            ##self.logfile.force_sync()
+            # #self.logfile.force_sync()
 
-    def debug(self, data):
-        self.log("DEBUG: " + data, DEBUG)
+    debug = functools.partialmethod(log, level=DEBUG)
+    info = functools.partialmethod(log, level=INFO)
+    warning = functools.partialmethod(log, level=WARNING)
+    error = functools.partialmethod(log, level=ERROR)
+    critical = functools.partialmethod(log, level=CRITICAL)
 
-    def info(self, data):
-        self.log("INFO: " + data, INFO)
 
-    def warning(self, data):
-        self.log("WARNING: " + data, WARNING)
+class DebugClass(object):
+    def __init__(self, methods_to_log=(), attributes_to_log=(), log_level=DEBUG):
+        self.LOG_METHODS = methods_to_log
+        self.LOG_ATTRIBUTES = attributes_to_log
+        self.LOG_LEVEL = log_level
 
-    def error(self, data):
-        self.log("ERROR: " + data, ERROR)
+    def __getattr__(self, item):
+        to_return = super().__getattribute__(item)
+        if item in self.LOG_ATTRIBUTES:
+            logger.log("%s accessing %s" % (_get_caller(), item))
 
-    def critical(self, data):
-        self.log("CRITICAL: " + data, CRITICAL)
+        return to_return
+
+    def __setattr__(self, *args, **kwargs):
+        pass
+
+
+def func_logger(func, to_watch=(), log_level=DEBUG):
+    if not func:
+        return functools.partial(func_logger, to_watch=to_watch, log_level=log_level)
+
+    func_parameters = func.__code__.co_varnames
+
+    @functools.wraps(func)
+    def new_f(*args, **kwargs):
+        to_display = []
+
+        for arg_num, arg in enumerate(args):
+            arg_name = func_parameters[arg_num]
+            if arg_name in to_watch:
+                to_display.append((arg_name, arg))
+
+        for key, value in kwargs.items():
+            if key in to_watch:
+                to_display.append((key, value))
+
+        if to_display == []:
+            logger.log("%s called." % (func.__name__,), log_level)
+
+        else:
+            the_string = "%s called with args: "
+            for key, value in to_display:
+                the_string += "{}: {}".format(key, value)
+
+            logger.log(the_string)
+
+        return func(*args, **kwargs)
+
+    return new_f
 
 logger = None
 
