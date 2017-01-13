@@ -11,14 +11,6 @@ import io
 import functools
 from queue import Queue
 
-COLOUR_ENABLED = False
-try:
-    import colours
-    COLOUR_ENABLED = True
-
-except ImportError:
-    pass
-
 # Debug levels in descending levels of detail.
 # (priority, txt-colour, bg-colour)
 DEBUG = (10, "blue", None, "DEBUG")
@@ -124,7 +116,7 @@ class OutputStream(object):
 
 
 class StdoutStream(OutputStream):
-    def __init__(self, threaded=False, force_write=False):
+    def __init__(self, path=None, threaded=False, force_write=False):
         self.force_write = force_write
         super().__init__(threaded=threaded)
 
@@ -139,23 +131,59 @@ class StdoutStream(OutputStream):
 
 
 class FileStream(OutputStream):
-    def __init__(self, path, threaded=True, force_write=False):
-        self.output_file = open(path, "a+")
+    def __init__(self, log_dir_or_path, one_file_mode=False, threaded=True, force_write=False):
+        if one_file_mode:
+            self.logfile_path = log_dir_or_path
+            the_dir = self.logfile_path.rstrip(os.path.basename(self.logfile_path))
+            create_path(the_dir)
+
+            try:
+                logfile = open(log_dir_or_path, "r")
+                data = logfile.read().strip()
+                logfile.close()
+
+            except FileNotFoundError:
+                data = ""
+
+            # Open the file for reading and appending. It is created if it doesn't already exist.
+            self.logfile = open(log_dir_or_path, "a+")
+
+            if data == "":
+                self.logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
+
+            else:
+                self.logfile.write("\n\n{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
+
+        else:
+            create_path(log_dir_or_path)
+
+            filename = "{}@{}.log".format(get_date(), get_time())
+            filename = filename.replace("/", "-")
+            if os.name == "nt":
+                filename = filename.replace(":", "-")
+
+            self.logfile_path = os.path.join(log_dir_or_path, filename)
+            self.logfile = open(self.logfile_path, "a+")
+
+            self.logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
+
+        self.force_sync()
+
         self.force_write = force_write
 
         super().__init__(threaded=threaded)
 
     def emit(self, data):
-        self.output_file.write(data)
-        self.output_file.flush()
+        self.logfile.write(data)
+        self.logfile.flush()
         if self.force_write:
-            os.fsync(self.output_file.fileno())
+            os.fsync(self.logfile.fileno())
 
     def force_sync(self):
-        os.fsync(self.output_file.fileno())
+        os.fsync(self.logfile.fileno())
 
     def close(self):
-        self.output_file.close()
+        self.logfile.close()
 
 
 # Sync interval?
@@ -184,7 +212,7 @@ class Logger(object):
     """
     Handles logging.
     """
-    def __init__(self, log_dir_or_path, one_file_mode=False, file_level=DEBUG, stdout_level=INFO, verbose=True, colour=COLOUR_ENABLED, threaded=True):
+    def __init__(self, output_streams=((StdoutStream, DEBUG),), verbose=True, threaded=True):
         """
         Parameters:
 
@@ -196,60 +224,12 @@ class Logger(object):
         colour: enable the use of codes for coloured text in a terminal. Can't be changed once Logger object has been instantiated.
         threaded: whether the file writing is handled by a separate thread.
         """
-        if one_file_mode:
-            self.logfile_path = log_dir_or_path
-            the_dir = self.logfile_path.rstrip(os.path.basename(self.logfile_path))
-            create_path(the_dir)
+        self.output_streams = output_streams
 
-            try:
-                logfile = open(log_dir_or_path, "r")
-                data = logfile.read().strip()
-                logfile.close()
-
-            except FileNotFoundError:
-                data = ""
-
-            # Open the file for reading and appending. It is created if it doesn't already exist.
-            self.logfile = FileStream(log_dir_or_path)
-
-            if data == "":
-                self.logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
-
-            else:
-                self.logfile.write("\n\n{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
-
-        else:
-            create_path(log_dir_or_path)
-
-            filename = "{}@{}.log".format(get_date(), get_time())
-            filename = filename.replace("/", "-")
-            if os.name == "nt":
-                filename = filename.replace(":", "-")
-
-            self.logfile_path = os.path.join(log_dir_or_path, filename)
-            self.logfile = FileStream(self.logfile_path)
-
-            self.logfile.write("{} New {} session, logging started.\n\n".format(get_datetime(), _get_caller_file()))
-
-        self.logfile.force_sync()
-
-        self.file_level = file_level
-        self.stdout_level = stdout_level
         self.verbose = verbose
         self.threaded = threaded
-        
-        try:
-            if colour:
-                self._writer = colours.ColoredWriter()
-                self._writer.on_colour = None
-        
-        except NameError:
-            pass
 
     def log(self, data, level):
-        if level[0] < self.file_level[0] and level[0] < self.stdout_level[0]:
-            return
-
         data = "%s: " % (level[-1],)
 
         now = get_time()
@@ -261,18 +241,18 @@ class Logger(object):
         else:
             to_log = "%s %s\n" % (now, data)
 
-        if self.verbose and not level[0] < self.stdout_level[0]:
-            try:
-                self._writer.write(to_log, self.stdout_level[1], self.stdout_level[2])
+        for stream, stream_level in self.output_streams:
+            if not level[0] < stream_level[0]:
+                stream.emit("%s\n" % (to_log,))
 
-            except AttributeError:
-                print(to_log)
+    def force_sync(self):
+        """
+        Force the all the data held in buffer to be written to disk. Very slow.
 
-        if not level[0] < self.file_level[0]:
-            self.logfile.write("%s\n" % (to_log,))
-
-            # The following line causes huge slowdowns
-            # #self.logfile.force_sync()
+        Returns: None
+        """
+        for stream in self.output_streams:
+            stream[0].force_sync()
 
     debug = functools.partialmethod(log, level=DEBUG)
     info = functools.partialmethod(log, level=INFO)
@@ -335,11 +315,12 @@ logger = None
 
 
 def start_logging_session(log_dir_or_path=os.path.join("logs"), one_file_mode=False, file_level=DEBUG,
-                          stdout_level=INFO, verbose=True, colour=COLOUR_ENABLED, threaded=False):
+                          stdout_level=INFO, verbose=True, threaded=False):
     global logger
 
     if logger is None:
-        logger = Logger(log_dir_or_path, one_file_mode, file_level, stdout_level, verbose, colour, threaded)
+        stream = FileStream(log_dir_or_path, one_file_mode, threaded)
+        logger = Logger(((StdoutStream(), stdout_level), (stream, file_level)), verbose, threaded)
 
     else:
         # logging session already started!
