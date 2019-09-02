@@ -1,6 +1,8 @@
 """
 Need a way of stopping streams from blocking if queue.get() is called after last log message but before main thread ends
 Add verbosity levels.
+Fix threaded file writing
+Stdout needs level
 """
 import datetime
 import sys
@@ -10,14 +12,36 @@ import errno
 import io
 import functools
 from queue import Queue
+from collections import namedtuple
+
+try:
+    import colorama
+    colorama.init()
+    COLOUR_ENABLED = True
+
+except ModuleNotFoundError:
+    COLOUR_ENABLED = False
 
 # Debug levels in descending levels of detail.
 # (priority, txt-colour, bg-colour)
-DEBUG = (10, "blue", None, "DEBUG")
-INFO = (20, "green", None, "INFO")
-WARNING = (30, "yellow", None, "WARNING")
-ERROR = (40, "red", None, "ERROR")
-CRITICAL = (50, "red", "white", "CRITICAL")
+
+Verbosity = namedtuple("Verbosity", ("level", "name", "fg_colour", "bg_colour"))
+# Make fg_colour and bg_colour optional fields
+Verbosity.__new__.__defaults__ = ("", "")
+
+if COLOUR_ENABLED:
+    DEBUG = Verbosity(level=10, name="DEBUG", fg_colour=colorama.Fore.BLUE)
+    INFO = Verbosity(level=20, name="INFO", fg_colour=colorama.Fore.GREEN)
+    WARNING = Verbosity(level=30, name="WARNING", fg_colour=colorama.Fore.YELLOW)
+    ERROR = Verbosity(level=40, name="ERROR", fg_colour=colorama.Fore.RED)
+    CRITICAL = Verbosity(level=50, name="CRITICAL", fg_colour=colorama.Fore.RED, bg_colour=colorama.Fore.WHITE)
+
+else:
+    DEBUG = Verbosity(level=10, name="DEBUG")
+    INFO = Verbosity(level=20, name="INFO")
+    WARNING = Verbosity(level=30, name="WARNING")
+    ERROR = Verbosity(level=40, name="ERROR")
+    CRITICAL = Verbosity(level=50, name="CRITICAL")
 
 
 def get_datetime():
@@ -230,7 +254,7 @@ class Logger(object):
         self.threaded = threaded
 
     def log(self, data, level):
-        data = "%s: " % (level[-1],)
+        data = "%s: " % (level.name,)
 
         now = get_time()
 
@@ -242,7 +266,7 @@ class Logger(object):
             to_log = "%s %s\n" % (now, data)
 
         for stream, stream_level in self.output_streams:
-            if not level[0] < stream_level[0]:
+            if not level.level < stream_level.level:
                 stream.emit("%s\n" % (to_log,))
 
     def force_sync(self):
@@ -297,7 +321,7 @@ def func_logger(func, to_watch=(), log_level=DEBUG):
             if key in to_watch:
                 to_display.append((key, value))
 
-        if to_display == []:
+        if not to_display:
             logger.log("%s called." % (func.__name__,), log_level)
 
         else:
